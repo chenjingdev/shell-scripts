@@ -1,6 +1,6 @@
-# Antigravity 자동화용 쉘 스크립트.
+# Antigravity 자동화용 쉘 스크립트 + API 서버
 
-`antigravity_send.sh`는 터미널로 입력으로 받은 프롬프트를 Antigravity에 붙여넣고 전송해줍니다.
+`antigravity_send.sh`는 표준 입력으로 받은 텍스트를 Antigravity에 붙여넣고 전송합니다.
 macOS에서 동작하며 단축키/접근성 권한이 필요합니다.
 
 ![Automation demo](assets/automation.gif)
@@ -10,6 +10,7 @@ macOS에서 동작하며 단축키/접근성 권한이 필요합니다.
 - macOS
 - Antigravity 앱 설치
 - 접근성 권한(터미널/osascript에서 키 입력 및 메뉴 제어)
+- Python 3 (API 서버 사용 시)
 
 ## Setup
 
@@ -18,56 +19,90 @@ macOS에서 동작하며 단축키/접근성 권한이 필요합니다.
    - **손쉬운 사용(Accessibility)**: 터미널(또는 사용하는 터미널 앱)과 Antigravity 허용
    - 프롬프트가 뜨면 **Automation** 권한도 허용
 
-## Usage
+## Usage (Shell Script)
 
 ```sh
-echo "김치찌개 이미지 생성해줘." | antigravity_send.sh
+echo "김치찌개 이미지 생성해줘." | ./antigravity_send.sh
 ```
 
 직접 실행하려면 PATH에 `~/bin`이 포함되어 있어야 합니다.
 
-## Notes
+## API Server (FastAPI)
 
-- 새 세션 단축키가 동작하지 않으면 Antigravity의 키 바인딩 중복을 확인합니다.
-- 붙여넣기가 실패할 경우 메뉴(편집→붙여넣기) 방식으로 재시도하도록 되어 있습니다.
+API 서버를 띄워 외부에서 프롬프트를 보내면,
+`antigravity_send.sh`를 실행해 Antigravity로 전달합니다.
 
-## API Server (Node)
+## API Overview
 
-이 머신에서 API 서버를 띄워 외부에서 프롬프트만 보내면, Antigravity로 전송한 뒤
-다운로드 폴더에 생성된 결과 파일을 base64로 반환합니다.
-프롬프트는 서버에서 변경하지 않습니다.
+- Base URL: `http://localhost:<PORT>`
+- 인증: `/send`, `/history`는 `X-API-Key` 헤더 필요 (`/health`, `/results`는 불필요)
+- 요청 형식: JSON
+- 결과 파일: `OUTPUT_DIR`에 저장되며 파일명이 `jobId`로 시작해야 조회됩니다.
+- 정적 파일: `/results/<filename>` 경로로 결과 파일을 다운로드할 수 있습니다.
+
+### Endpoints
+
+**POST** `/send`
+
+- 설명: 프롬프트를 전송하고 작업을 큐에 넣습니다.
+- 요청 본문:
+  - `type`: `image` | `text`
+  - `prompt`: 문자열
+- 응답 (202):
+  - `{ ok: true, status: "accepted", jobId }`
+  - 응답 형태: `{ ok, status, jobId }`
+
+**GET** `/history/<JOB_ID>`
+
+- 설명: 해당 `jobId` 결과 파일이 생성되었는지 확인합니다.
+- 응답:
+  - 완료 (200): `{ ok: true, status: "done", jobId, filename, mime }`
+  - 진행 중 (202): `{ ok: false, status: "pending", jobId }`
+  - 타임아웃 (408): `{ ok: false, status: "timeout", jobId, message }`
+
+**GET** `/results/<filename>`
+
+- 설명: 결과 파일 다운로드 (이미지/텍스트)
+
+**GET** `/health`
+
+- 설명: 헬스체크
+- 응답: `{ ok: true }`
+
+### Install
+
+```sh
+pip install -r requirements.txt
+```
+
+### Environment
+
+`.env` 파일을 만들거나 환경변수를 지정합니다.
+
+```sh
+API_KEY=<YOUR_API_KEY>
+SCRIPT_PATH=<PATH_TO_SCRIPT>
+OUTPUT_DIR=<PATH_TO_RESULTS_DIR>
+PORT=<PORT>
+```
 
 ### Run
 
 ```sh
-API_KEY=changeme node server.js
+python server.py
 ```
 
-### Request
+### Notes
 
-```sh
-curl -X POST http://localhost:8787/ \\
-  -H 'Content-Type: application/json' \\
-  -H 'X-API-Key: changeme' \\
-  -d '{\"prompt\":\"김치찌개 이미지 생성해줘\",\"outputType\":\"image\"}'
-```
+- `/send` 요청 시 서버는 JSON 문자열(`type`, `jobId`, `prompt`)을 스크립트 표준 입력으로 전달합니다.
+- 서버는 `OUTPUT_DIR`에서 **파일명이 `jobId`로 시작하는 결과 파일**을 찾습니다. 결과 파일이 이 규칙을 따르도록 Antigravity 저장 설정/후처리를 맞춰야 합니다.
 
-응답은 `{ ok, jobId, filename, mime, bytes, base64 }` 형태로 반환됩니다.
-텍스트의 경우 `{ text }`도 포함됩니다.
-서버는 요청 시점 이후에 생성된 최신 파일을 반환합니다.
+## Tips
 
-### Options
+- Antigravity가 “파일을 생성할까요?” 같은 확인 얼럿을 띄우면 자동화가 끊깁니다. 텍스트 생성 스킬에는 얼럿을 피하기 위해 `run_command`로 파일을 쓰고 `SafeToAutoRun=true`로 설정하라고 명시했습니다.
+- 프롬프트에 따라 얼럿이 뜨거나 안 뜰 수 있습니다. 특히 “파일 생성/저장”을 암시하는 문구가 들어가면 더 잘 뜹니다.
+- 셸로만 입력을 받으면 사람이 치는 과정에서 포맷이 흔들려 의도치 않은 결과가 나오기 쉽습니다. 이 프로젝트는 API로 감싸 **요청 포맷을 고정**하고, 결과 처리도 일관되게 만들었습니다.
 
-- `outputType`: `image` | `text` (필수)
-- `timeoutMs`: 결과 파일 대기 시간 (기본 180000)
-- `pollIntervalMs`: 폴링 간격 (기본 1000)
+## n8n × Antigravity 연동 데모
 
-환경변수:
-
-- `PORT` (기본 8787)
-- `API_KEY` (필수)
-- `OUTPUT_DIR_IMAGE` (기본 `./images`)
-- `OUTPUT_DIR_TEXT` (기본 `./texts`)
-- `SCRIPT_PATH` (기본 `./antigravity_send.sh`)
-주의: Antigravity가 결과물을 자동으로 파일로 저장하도록 설정되어 있어야 합니다.
-또한 이미지/텍스트 결과는 각각 `images/`, `texts/` 폴더로 저장되도록 설정되어 있어야 합니다.
+![Demo](assets/demo.gif)

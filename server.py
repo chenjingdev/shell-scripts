@@ -62,7 +62,14 @@ def find_result_file(job_id: str) -> Optional[Path]:
 async def lifespan(app: FastAPI):
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     if not API_KEY or not SCRIPT_PATH:
-        print("CRITICAL: API_KEY or SCRIPT_PATH not set in .env")
+        raise RuntimeError("API_KEY or SCRIPT_PATH not set in environment")
+    script_file = Path(SCRIPT_PATH)
+    if not script_file.exists():
+        raise RuntimeError(f"SCRIPT_PATH not found: {SCRIPT_PATH}")
+    if not script_file.is_file():
+        raise RuntimeError(f"SCRIPT_PATH is not a file: {SCRIPT_PATH}")
+    if not os.access(script_file, os.X_OK):
+        raise RuntimeError(f"SCRIPT_PATH is not executable: {SCRIPT_PATH}")
     yield
 
 app = FastAPI(lifespan=lifespan)
@@ -85,6 +92,8 @@ async def send_job(req: SendRequest, x_api_key: str = Header(None)):
     
     if req.type not in ['image', 'text']:
         raise HTTPException(status_code=400, detail="Type must be 'image' or 'text'")
+    if not req.prompt or not req.prompt.strip():
+        raise HTTPException(status_code=400, detail="Prompt is required")
     
     # Job ID 생성
     job_id = f"{int(time.time()*1000)}_{secrets.token_hex(4)}"
