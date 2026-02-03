@@ -1,5 +1,6 @@
 images/
 texts/
+results/
 node_modules/
 package-lock.json
 .env
